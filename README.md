@@ -52,10 +52,21 @@ This will launch a web browser with the interactive model interface. Use the sid
 
 ## Model Structure
 
-The model is organized in a simple, modular structure:
+The model is organized in a modular, maintainable structure:
 
 - `src/model/kerbside_model.py`: The main model class encapsulating all calculations
-- `app.py`: Streamlit web interface for interacting with the model
+- `src/components/`: UI components for the Streamlit app
+  - `sidebar.py`: Parameter input sidebar
+  - `financial_tab.py`: Financial overview tab
+  - `asset_tab.py`: Asset evolution tab
+  - `market_tab.py`: Market effects tab
+  - `distributional_tab.py`: Distributional impact tab
+  - `monte_carlo_tab.py`: Monte Carlo simulation tab
+- `src/utils/`: Utility functions and constants
+  - `constants.py`: Application-wide constants
+- `app.py`: Main Streamlit app entry point
+
+This modular structure improves code maintainability, readability, and makes it easier to extend or modify individual components.
 
 ## Parameter Descriptions
 
