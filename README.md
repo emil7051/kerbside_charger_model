@@ -25,8 +25,8 @@ This model consolidates multiple parameters and calculations into a single, unif
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/kerbside-model.git
-   cd kerbside-model
+   git clone https://github.com/emil7051/kerbside_charger_model.git
+   cd kerbside_charger_model
    ```
 
 2. Create a virtual environment (optional but recommended):
@@ -78,8 +78,6 @@ The model is organized in a simple, modular structure:
 
 - **Market Parameters**:
   - `market_displacement`: Rate at which RAB displaces private market
-  - `innovation_rate`: Annual cost reduction in competitive market
-  - `monopoly_innovation_rate`: Annual cost reduction in monopoly market
 
 ## License
 
