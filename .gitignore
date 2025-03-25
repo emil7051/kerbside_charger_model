@@ -39,6 +39,8 @@ env/
 .vscode/
 *.swp
 *.swo
+pyrightconfig.json
+.env
 
 # Logs
 *.log 

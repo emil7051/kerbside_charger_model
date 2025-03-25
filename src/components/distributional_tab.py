@@ -6,7 +6,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-
+from src.utils.parameters import DEFAULT_MEDIAN_INCOME, INCOME_QUINTILES, ENERGY_BURDEN, EV_LIKELIHOOD
 
 def render_distributional_tab(model_results):
     """
@@ -27,57 +27,30 @@ def render_distributional_tab(model_results):
     of each household's income and energy spending.
     """)
     
-    # Income quintile data (% of median income)
-    income_quintiles = {
-        "Quintile 1 (Lowest)": 0.4,  # 40% of median income
-        "Quintile 2": 0.7,
-        "Quintile 3 (Median)": 1.0,
-        "Quintile 4": 1.4,
-        "Quintile 5 (Highest)": 2.5
-    }
-    
-    # Energy burden by income quintile (% of income spent on energy)
-    # Lower income households spend higher percentage of income on energy
-    energy_burden = {
-        "Quintile 1 (Lowest)": 0.085,  # 8.5% of income
-        "Quintile 2": 0.065,
-        "Quintile 3 (Median)": 0.045,
-        "Quintile 4": 0.025,
-        "Quintile 5 (Highest)": 0.015
-    }
-    
-    # EV ownership likelihood multiplier (higher income = higher likelihood of owning an EV)
-    ev_likelihood = {
-        "Quintile 1 (Lowest)": 0.01,
-        "Quintile 2": 0.4,
-        "Quintile 3 (Median)": 0.8,
-        "Quintile 4": 1.2,
-        "Quintile 5 (Highest)": 1.6
+    # Calculate actual income values from the quintile percentages
+    income_quintiles_absolute = {
+        quintile: DEFAULT_MEDIAN_INCOME * percentage
+        for quintile, percentage in INCOME_QUINTILES.items()
     }
     
     # Calculate impacts by quintile
     quintile_impacts = []
     
-    # Median income assumed at $65,000
-    median_income = 65000
-    
     # Calculate the bill impact in dollars (same for all households)
     flat_bill_impact = avg_bill_impact
     
-    for quintile, income_factor in income_quintiles.items():
-        income = median_income * income_factor
+    for quintile, percentage in INCOME_QUINTILES.items():
+        # Calculate income using the percentages from constants
+        income = DEFAULT_MEDIAN_INCOME * percentage
         
-        # Calculate current energy costs based on energy burden
-        current_energy_cost = income * energy_burden[quintile]
-        
-        # Percentage impact on energy costs
-        pct_energy_impact = (flat_bill_impact / current_energy_cost) * 100
+        # Calculate impacts
+        current_energy_cost = income * ENERGY_BURDEN[quintile]
         
         # Percentage impact on income
         pct_income_impact = (flat_bill_impact / income) * 100
         
-        # Calculate potential benefit from EV chargers
-        benefit_factor = ev_likelihood[quintile]
+        # EV benefit calculation
+        benefit_factor = EV_LIKELIHOOD[quintile]
         
         quintile_impacts.append({
             "Quintile": quintile,
@@ -85,13 +58,12 @@ def render_distributional_tab(model_results):
             "Energy Costs": f"${current_energy_cost:,.0f}",
             "Bill Impact": f"${flat_bill_impact:.2f}",
             "% of Income": f"{pct_income_impact:.3f}%",
-            "% of Energy Costs": f"{pct_energy_impact:.2f}%",
             "EV Ownership Likelihood": f"{benefit_factor:.1f}x"
         })
 
     # Calculate regressivity metrics
-    lowest_quintile_income = median_income * income_quintiles["Quintile 1 (Lowest)"]
-    highest_quintile_income = median_income * income_quintiles["Quintile 5 (Highest)"]
+    lowest_quintile_income = DEFAULT_MEDIAN_INCOME * INCOME_QUINTILES["Quintile 1 (Lowest)"]
+    highest_quintile_income = DEFAULT_MEDIAN_INCOME * INCOME_QUINTILES["Quintile 5 (Highest)"]
     
     lowest_quintile_pct_impact = (avg_bill_impact / lowest_quintile_income) * 100
     highest_quintile_pct_impact = (avg_bill_impact / highest_quintile_income) * 100
@@ -102,7 +74,7 @@ def render_distributional_tab(model_results):
     # Show regressivity metrics
     st.subheader("Regressivity Metrics")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         st.metric(
@@ -114,21 +86,28 @@ def render_distributional_tab(model_results):
     with col2:
         st.metric(
             "Benefit Ratio",
-            f"{ev_likelihood['Quintile 5 (Highest)'] / ev_likelihood['Quintile 1 (Lowest)']:.1f}x",
+            f"{EV_LIKELIHOOD['Quintile 5 (Highest)'] / EV_LIKELIHOOD['Quintile 1 (Lowest)']:.1f}x",
             help="How many times more likely highest income quintile benefits from EV chargers"
+        )
+    
+    with col3:
+        st.metric(
+            "NPV of Bill Impacts", 
+            f"${summary['npv_bill_impact']:.2f}",
+            help="Net present value of bill impacts over 15 years"
         )
         
     # Create dataframe and display table
     impact_df = pd.DataFrame(quintile_impacts)
     st.table(impact_df)
 
-    # Visualization of impact as % of income
+    # Visualisation of impact as % of income
     st.subheader("Bill Impact as Percentage of Income")
     
     pct_income_values = [float(qi["% of Income"].replace("%", "")) for qi in quintile_impacts]
     
     fig = px.bar(
-        x=list(income_quintiles.keys()),
+        x=list(INCOME_QUINTILES.keys()),
         y=pct_income_values,
         labels={"x": "Income Quintile", "y": "Percentage of Annual Income (%)"},
         title="Bill Impact as Percentage of Income by Quintile"
@@ -145,7 +124,7 @@ def render_distributional_tab(model_results):
     # Add bar for income impact
     fig.add_trace(
         go.Bar(
-            x=list(income_quintiles.keys()),
+            x=list(INCOME_QUINTILES.keys()),
             y=pct_income_values,
             name="Cost (% of Income)",
             marker_color="firebrick"
@@ -155,8 +134,8 @@ def render_distributional_tab(model_results):
     # Add bar for EV ownership likelihood
     fig.add_trace(
         go.Bar(
-            x=list(income_quintiles.keys()),
-            y=list(ev_likelihood.values()),
+            x=list(INCOME_QUINTILES.keys()),
+            y=list(EV_LIKELIHOOD.values()),
             name="Benefit (EV Ownership Likelihood)",
             marker_color="forestgreen"
         )
@@ -178,8 +157,8 @@ def render_distributional_tab(model_results):
     
     The charts above illustrate the regressivity of the EV charger program:
     
-    - **Same Dollar Amount, Different Impact**: All households pay the same dollar amount on their utility bills, 
-      but this represents a much larger percentage of income for lower-income households.
+    - **Same Dollar Amount, Different Impact**: The same dollar amount represents 
+        a much larger percentage of income for lower-income households.
       
     - **Energy Burden**: Lower-income households already spend a higher percentage of their income on energy costs,
       making any additional costs more impactful.

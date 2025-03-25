@@ -3,24 +3,49 @@ Asset Evolution tab component for the Kerbside Model app.
 """
 
 import streamlit as st
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-
 def render_asset_tab(model_results):
     """
-    Render the Asset Base Evolution tab.
+    Render the Asset Evolution tab.
     
     Args:
         model_results: Dictionary of model results
     """
-    st.header("Asset Base Evolution")
+    st.header("Asset Evolution")
     
     # Extract key results
-    rollout_df = model_results["rollout"]
+    summary = model_results["summary"]
     rab_df = model_results["rab"]
+    rollout_df = model_results["rollout"]
     
-    # Charger deployment chart
+    # Display key metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            "Total Chargers Deployed", 
+            f"{summary['total_chargers']:,.0f}",
+            help="Total number of chargers deployed over the program"
+        )
+    
+    with col2:
+        st.metric(
+            "Peak RAB Value", 
+            f"${summary['peak_rab']/1e6:.1f}M",
+            help="Maximum value of the Regulated Asset Base"
+        )
+    
+    with col3:
+        st.metric(
+            "Peak RAB Year", 
+            f"Year {summary['peak_rab_year']}",
+            help="Year in which the RAB reaches its maximum value"
+        )
+    
+    # Charger deployment charts
     st.subheader("Charger Deployment")
     
     col1, col2 = st.columns(2)
@@ -62,27 +87,7 @@ def render_asset_tab(model_results):
         
         st.plotly_chart(fig, use_container_width=True)
     
-    # CapEx evolution
-    st.subheader("Capital Cost Evolution")
-    
-    fig = px.line(
-        rollout_df,
-        x=rollout_df.index,
-        y="unit_capex",
-        title="Capital Cost per Charger",
-        labels={"unit_capex": "CapEx per Charger ($)", "index": "Year"},
-        markers=True
-    )
-    
-    fig.update_layout(
-        xaxis=dict(tickmode='linear', dtick=1),
-        yaxis=dict(title="CapEx per Charger ($)"),
-        hovermode="x unified"
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # RAB evolution
+    # RAB evolution chart
     st.subheader("Regulated Asset Base Evolution")
     
     # Create a combined chart with opening RAB, additions, and closing RAB
@@ -145,4 +150,6 @@ def render_asset_tab(model_results):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     
-    st.plotly_chart(fig, use_container_width=True) 
+    st.plotly_chart(fig, use_container_width=True)
+    
+   

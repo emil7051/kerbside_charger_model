@@ -1,137 +1,222 @@
 """
-Kerbside Model - Simplified EV Charger RAB economic model.
+Kerbside Model - EV Charger RAB economic model.
 
-This module provides a clean, centralized implementation of the EV Charger RAB model
-with optimized calculations and streamlined parameter management.
+This model simulates the financial impacts of deploying electric vehicle (EV) chargers 
+through a Regulated Asset Base (RAB) approach.
 """
 
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, List, Any, Optional, TypedDict
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
+import streamlit as st
+from src.utils.parameters import (
+    DEFAULT_YEARS, 
+    DEFAULT_CHARGERS_PER_YEAR, 
+    DEFAULT_CAPEX_PER_CHARGER, 
+    DEFAULT_OPEX_PER_CHARGER,
+    DEFAULT_ASSET_LIFE, 
+    DEFAULT_WACC, 
+    DEFAULT_CUSTOMER_BASE, 
+    DEFAULT_REVENUE_PER_CHARGER,
+    DEFAULT_DEPLOYMENT_YEARS, 
+    DEFAULT_DEPLOYMENT_DELAY,
+    DEFAULT_EFFICIENCY,
+    DEFAULT_EFFICIENCY_DEGRADATION,
+    DEFAULT_TECH_OBSOLESCENCE_RATE,
+    DEFAULT_MARKET_DISPLACEMENT,
+    DEFAULT_INITIAL_PRIVATE_CHARGERS, 
+    DEFAULT_PRIVATE_GROWTH_RATE,
+    DEFAULT_SATURATION_TIME_CONSTANT,
+    DEFAULT_OBSOLESCENCE_FACTOR
+)
 
-# ===========================================
-# Constants for the model
-# ===========================================
-DEFAULT_YEARS = 15  # Standard 15-year analysis period
-CHARGERS_PER_YEAR = 5000  # Default annual charger deployment
-CAPEX_PER_CHARGER = 6000  # Default capital cost per charger
-OPEX_PER_CHARGER = 500   # Default operating cost per charger
-DEFAULT_ASSET_LIFE = 8    # Default asset lifetime in years
-DEFAULT_WACC = 0.058      # Default Weighted Average Cost of Capital
-DEFAULT_CUSTOMER_BASE = 1800000  # Default utility customer base
-DEFAULT_REVENUE_PER_CHARGER = 100  # Default third-party revenue per charger
+# Type definitions for model outputs
+class ModelResults(TypedDict):
+    rollout: pd.DataFrame      # Charger deployment data
+    depreciation: pd.DataFrame # Depreciation calculations
+    rab: pd.DataFrame          # Regulated Asset Base evolution
+    revenue: pd.DataFrame      # Revenue requirements and bill impacts
+    market: pd.DataFrame       # Market competition effects
+    summary: Dict[str, float]  # Key performance metrics
 
-# ===========================================
-# Main Model Class
-# ===========================================
+# Define a standalone cached function for calculations
+@st.cache_data
+def run_model_calculations(
+    chargers_per_year: float,
+    deployment_years: int,
+    deployment_delay: float,
+    capex_per_charger: float,
+    opex_per_charger: float,
+    asset_life: int,
+    wacc: float,
+    customer_base: int,
+    third_party_revenue: float,
+    efficiency: float,
+    efficiency_degradation: float,
+    tech_obsolescence_rate: float,
+    market_displacement: float
+) -> ModelResults:
+    """
+    Run model calculations with caching.
+    
+    This standalone function allows for proper Streamlit caching by avoiding 
+    class methods with 'self' parameters that cannot be hashed.
+    
+    Parameters:
+        chargers_per_year: Annual charger deployment rate
+        deployment_years: Period over which chargers are deployed
+        deployment_delay: Factor to adjust deployment speed
+        capex_per_charger: Capital expenditure per charger
+        opex_per_charger: Annual operating expense per charger
+        asset_life: Expected lifetime of charger assets
+        wacc: Weighted Average Cost of Capital
+        customer_base: Number of utility customers
+        third_party_revenue: Revenue per charger from third parties
+        efficiency: Operational efficiency factor
+        efficiency_degradation: Annual change in efficiency
+        tech_obsolescence_rate: Rate of technology obsolescence
+        market_displacement: Rate at which RAB deployment displaces private investment
+        
+    Returns:
+        Dictionary with model results and metrics
+    """
+    # Create model instance and set parameters
+    model = KerbsideModel({
+        "chargers_per_year": chargers_per_year,
+        "deployment_years": deployment_years,
+        "deployment_delay": deployment_delay,
+        "capex_per_charger": capex_per_charger,
+        "opex_per_charger": opex_per_charger,
+        "asset_life": asset_life,
+        "wacc": wacc,
+        "customer_base": customer_base,
+        "third_party_revenue": third_party_revenue,
+        "efficiency": efficiency,
+        "efficiency_degradation": efficiency_degradation,
+        "tech_obsolescence_rate": tech_obsolescence_rate,
+        "market_displacement": market_displacement
+    })
+    
+    # Run model calculations but bypass the run method's cache check
+    return model._run_calculations()
+
 class KerbsideModel:
     """
-    Centralized EV Charger RAB economic model with simplified parameters and methods.
-    
-    This class encapsulates the entire model functionality, making it easier to
-    manage parameters and run different scenarios.
+    This model calculates:
+    - Deployment schedule for EV chargers
+    - Asset depreciation and RAB evolution
+    - Revenue requirements and customer bill impacts
+    - Market competition effects
+    - Monte Carlo simulations for sensitivity analysis
     """
     
     def __init__(self, params: Optional[Dict[str, Any]] = None):
-        """
-        Initialize the model with parameters.
-        
-        Args:
-            params: Dictionary of model parameters (uses defaults for any missing)
-        """
-        # Core parameters with defaults
+        """Initialise the model with parameters."""
+        # Default model parameters
         self.params = {
             # Deployment parameters
-            "chargers_per_year": CHARGERS_PER_YEAR,
-            "deployment_years": 5,
-            "deployment_delay": 1.0,  # Multiplier on deployment time (>1 means slower)
+            "chargers_per_year": DEFAULT_CHARGERS_PER_YEAR,
+            "deployment_years": DEFAULT_DEPLOYMENT_YEARS,
+            "deployment_delay": DEFAULT_DEPLOYMENT_DELAY,
             
             # Financial parameters
-            "capex_per_charger": CAPEX_PER_CHARGER,
-            "opex_per_charger": OPEX_PER_CHARGER,
+            "capex_per_charger": DEFAULT_CAPEX_PER_CHARGER,
+            "opex_per_charger": DEFAULT_OPEX_PER_CHARGER,
             "asset_life": DEFAULT_ASSET_LIFE,
-            "wacc": DEFAULT_WACC,  # Single WACC parameter (can be adjusted by period)
-            "wacc_periods": {  # Optional period adjustments
-                "6-10": 0.06,
-                "11-15": 0.055
-            },
-            "cost_escalation": 1.0,  # Cost multiplier
-            "cost_decline_rate": 0.03,  # Annual technology cost decline
+            "wacc": DEFAULT_WACC,
             
             # Customer parameters
             "customer_base": DEFAULT_CUSTOMER_BASE,
             "third_party_revenue": DEFAULT_REVENUE_PER_CHARGER,
             
-            # Efficiency parameters (consolidated)
-            "efficiency": 1.0,  # Combined efficiency factor (1.0 = fully efficient)
-            "efficiency_degradation": 0.0,  # Annual efficiency degradation
-            
-            # Market parameters
-            "market_displacement": 0.0,  # Private market displacement rate
-            "innovation_rate": 0.02,  # Market innovation rate
-            "monopoly_innovation_rate": 0.01,  # Monopoly innovation rate
-            
-            # Technology parameters
-            "tech_obsolescence_rate": 0.0,  # Tech obsolescence rate
-            "utilization": 0.7,  # Capacity utilization
-            "risk_premium": 0.0,  # Additional risk premium
+            # Efficiency & market parameters
+            "efficiency": DEFAULT_EFFICIENCY,
+            "efficiency_degradation": DEFAULT_EFFICIENCY_DEGRADATION,
+            "market_displacement": DEFAULT_MARKET_DISPLACEMENT,
+            "tech_obsolescence_rate": DEFAULT_TECH_OBSOLESCENCE_RATE,
         }
         
-        # Update with provided parameters
+        # Update with any provided parameters
         if params:
             self.params.update(params)
         
-        # Results storage
+        # Validate parameters to prevent edge cases
+        self._validate_parameters()
+        
         self.results = {}
 
-    def calculate_wacc(self, year: int) -> float:
-        """Calculate the appropriate WACC for a given year."""
-        base_wacc = self.params["wacc"]
-        
-        if "wacc_periods" in self.params:
-            if year >= 11 and "11-15" in self.params["wacc_periods"]:
-                return self.params["wacc_periods"]["11-15"]
-            elif year >= 6 and "6-10" in self.params["wacc_periods"]:
-                return self.params["wacc_periods"]["6-10"]
-        
-        # Add risk premium if specified
-        if self.params.get("risk_premium", 0) > 0:
-            # Risk premium decreases over time as technology matures
-            adjustment = self.params["risk_premium"] * max(0, 1 - 0.05 * (year - 1))
-            base_wacc += adjustment
+    def _validate_parameters(self):
+        """Validate model parameters to prevent edge cases."""
+        # Ensure no divide-by-zero errors
+        if self.params["asset_life"] <= 0:
+            self.params["asset_life"] = DEFAULT_ASSET_LIFE
+            print(f"Warning: Asset life must be positive. Reset to default value: {DEFAULT_ASSET_LIFE}")
             
-        return base_wacc
+        if self.params["customer_base"] <= 0:
+            self.params["customer_base"] = DEFAULT_CUSTOMER_BASE
+            print(f"Warning: Customer base must be positive. Reset to default value: {DEFAULT_CUSTOMER_BASE}")
+            
+        # Ensure reasonable values for percentage-based parameters
+        if self.params["wacc"] < 0:
+            self.params["wacc"] = DEFAULT_WACC
+            print(f"Warning: WACC must be non-negative. Reset to default value: {DEFAULT_WACC}")
+            
+        if self.params["tech_obsolescence_rate"] < 0:
+            self.params["tech_obsolescence_rate"] = DEFAULT_TECH_OBSOLESCENCE_RATE
+            print(f"Warning: Technology obsolescence rate must be non-negative. Reset to default value: {DEFAULT_TECH_OBSOLESCENCE_RATE}")
+            
+        if self.params["market_displacement"] < 0 or self.params["market_displacement"] > 1:
+            self.params["market_displacement"] = DEFAULT_MARKET_DISPLACEMENT
+            print(f"Warning: Market displacement must be between 0 and 1. Reset to default value: {DEFAULT_MARKET_DISPLACEMENT}")
 
-    def run(self) -> Dict[str, Any]:
+    def run(self) -> ModelResults:
         """
         Run the complete model and return results.
         
+        This method uses a cached standalone function to perform calculations
+        to avoid issues with caching methods that have 'self' parameters.
+        
         Returns:
-            Dictionary of results and DataFrames
+            Dictionary with model results and metrics
+        """
+        # Call the standalone cached function with parameters as explicit arguments
+        results = run_model_calculations(
+            chargers_per_year=self.params["chargers_per_year"],
+            deployment_years=self.params["deployment_years"],
+            deployment_delay=self.params["deployment_delay"],
+            capex_per_charger=self.params["capex_per_charger"],
+            opex_per_charger=self.params["opex_per_charger"],
+            asset_life=self.params["asset_life"],
+            wacc=self.params["wacc"],
+            customer_base=self.params["customer_base"],
+            third_party_revenue=self.params["third_party_revenue"],
+            efficiency=self.params["efficiency"],
+            efficiency_degradation=self.params["efficiency_degradation"],
+            tech_obsolescence_rate=self.params["tech_obsolescence_rate"],
+            market_displacement=self.params["market_displacement"]
+        )
+        
+        # Store results in the instance
+        self.results = results
+        return results
+    
+    def _run_calculations(self) -> ModelResults:
+        """
+        Run the core model calculations without caching.
+        This method should not be called directly - use run() instead.
         """
         years = list(range(1, DEFAULT_YEARS + 1))
         
-        # 1. Calculate charger rollout
+        # Run calculations in sequence
         rollout_df = self._calculate_rollout(years)
-        
-        # 2. Calculate depreciation
         depreciation_df = self._calculate_depreciation(rollout_df, years)
-        
-        # 3. Calculate RAB evolution
         rab_df = self._calculate_rab(rollout_df, depreciation_df, years)
-        
-        # 4. Calculate revenue requirements
         revenue_df = self._calculate_revenue(rollout_df, rab_df, years)
-        
-        # 5. Calculate summary statistics
+        market_df = self._calculate_market_effects(rollout_df, years)
         summary = self._calculate_summary(rollout_df, rab_df, revenue_df)
         
-        # 6. Calculate market competition effects
-        market_df = self._calculate_market_effects(rollout_df, years)
-        
-        # Store results
-        self.results = {
+        # Return results
+        return {
             "rollout": rollout_df,
             "depreciation": depreciation_df,
             "rab": rab_df,
@@ -139,420 +224,276 @@ class KerbsideModel:
             "market": market_df,
             "summary": summary
         }
-        
-        return self.results
     
-    def _calculate_rollout(self, years: List[int]) -> pd.DataFrame:
-        """Calculate the charger rollout schedule."""
+    def _calculate_rollout(self, years: List[int], params: Dict[str, Any] = None) -> pd.DataFrame:
+        """Calculate charger deployment schedule and capital expenditure."""
+        # Use self.params if no parameters are provided
+        if params is None:
+            params = self.params
+            
+        # Create DataFrame with years as index
         df = pd.DataFrame(index=years)
         
-        # Calculate deployment period with delay factor
-        deployment_years = min(self.params["deployment_years"], len(years))
-        if self.params.get("deployment_delay", 1.0) > 1.0:
-            deployment_years = min(len(years), int(deployment_years * self.params["deployment_delay"]))
+        # Determine deployment period (with optional delay factor)
+        deployment_years = min(params["deployment_years"], len(years))
+        if params.get("deployment_delay", DEFAULT_DEPLOYMENT_DELAY) > 1.0:
+            deployment_years = min(len(years), int(deployment_years * params["deployment_delay"]))
         
-        # Calculate annual and cumulative chargers
+        # Calculate chargers deployed annually (vectorised)
+        total_chargers = params["chargers_per_year"] * params["deployment_years"]
+        chargers_per_year = total_chargers / deployment_years
+        
+        # Initialize annual chargers column with zeros
         df["annual_chargers"] = 0
         
-        # Distribute chargers evenly across deployment years
-        chargers_per_year = self.params["chargers_per_year"] * self.params["deployment_years"] / deployment_years
+        # Set values for deployment years (vectorised)
+        deployment_mask = df.index <= deployment_years
+        df.loc[deployment_mask, "annual_chargers"] = chargers_per_year
         
-        for i, year in enumerate(years):
-            if i < deployment_years:
-                df.loc[year, "annual_chargers"] = chargers_per_year
-        
-        # Calculate cumulative chargers
+        # Calculate cumulative chargers (vectorised)
         df["cumulative_chargers"] = df["annual_chargers"].cumsum()
         
-        # Calculate initial CapEx with cost escalation
-        base_capex = self.params["capex_per_charger"] * self.params.get("cost_escalation", 1.0)
-        
-        # Apply cost decline over time
-        cost_decline_rate = self.params.get("cost_decline_rate", 0.0)
-        df["unit_capex"] = base_capex * np.power(1 - cost_decline_rate, np.array([y - 1 for y in years]))
-        
-        # Calculate total CapEx per year
+        # Calculate capital expenditure (vectorised)
+        df["unit_capex"] = params["capex_per_charger"]
         df["capex"] = df["annual_chargers"] * df["unit_capex"]
         
         return df
     
-    def _calculate_depreciation(self, rollout_df: pd.DataFrame, years: List[int]) -> pd.DataFrame:
-        """Calculate depreciation with adjustments for technological obsolescence."""
-        depreciation_matrix = np.zeros((len(years), len(years)))
+    def _calculate_depreciation(self, rollout_df: pd.DataFrame, years: List[int], params: Dict[str, Any] = None) -> pd.DataFrame:
+        """
+        Calculate asset depreciation, adjusting for technological obsolescence.
         
-        for vintage_year in years:
-            if rollout_df.loc[vintage_year, "annual_chargers"] == 0:
-                continue
-                
-            # Get capex for this vintage
+        This function calculates the depreciation schedule for assets based on their 
+        installation year and expected lifetime. It accounts for technological
+        obsolescence by reducing the effective asset life.
+        """
+        # Use self.params if no parameters are provided
+        if params is None:
+            params = self.params
+            
+        # Initialize depreciation dataframe
+        depreciation_df = pd.DataFrame(index=years, columns=["total_depreciation"], data=0.0)
+        
+        # Get parameters
+        base_asset_life = params["asset_life"]
+        obsolescence_rate = params.get("tech_obsolescence_rate", DEFAULT_TECH_OBSOLESCENCE_RATE)
+        
+        # Get non-zero deployment years for vectorization
+        active_vintage_years = rollout_df[rollout_df["annual_chargers"] > 0].index
+        
+        if len(active_vintage_years) == 0:
+            return depreciation_df
+            
+        # Pre-calculate obsolescence factors and asset lives for all vintage years at once
+        if obsolescence_rate > 0:
+            # Calculate obsolescence factors based on when assets were deployed
+            # Earlier deployments have longer life reduction due to technology advances
+            obsolescence_factors = 1 - obsolescence_rate * (1 - np.exp(-np.array(active_vintage_years) / DEFAULT_SATURATION_TIME_CONSTANT))
+            asset_lives = np.maximum(1, base_asset_life * obsolescence_factors)
+        else:
+            asset_lives = np.full(len(active_vintage_years), base_asset_life)
+            
+        # Create a matrix for depreciation calculation
+        # Rows represent vintage years, columns represent calendar years
+        depreciation_matrix = np.zeros((len(active_vintage_years), len(years)))
+        
+        for i, vintage_year in enumerate(active_vintage_years):
             capex = rollout_df.loc[vintage_year, "capex"]
-            
-            # Adjust asset life for technological obsolescence
-            asset_life = self.params["asset_life"]
-            if self.params.get("tech_obsolescence_rate", 0) > 0:
-                # Calculate effective asset life considering obsolescence
-                obsolescence_factor = 1 - self.params["tech_obsolescence_rate"] * (1 - np.exp(-vintage_year / 5))
-                asset_life = max(1, asset_life * obsolescence_factor)
-            
-            # Calculate annual depreciation
+            asset_life = asset_lives[i]
             annual_depr = capex / asset_life
             
-            # Apply depreciation for future years up to asset life
-            for future_year in range(vintage_year, min(vintage_year + int(asset_life), len(years))):
-                depreciation_matrix[future_year, vintage_year] = annual_depr
-        
-        # Create DataFrame with depreciation values
-        depreciation_df = pd.DataFrame(index=years)
-        depreciation_df["total_depreciation"] = depreciation_matrix.sum(axis=1)
+            # Calculate applicable years for this vintage
+            start_idx = years.index(vintage_year)
+            end_idx = min(start_idx + int(asset_life), len(years))
+            
+            # Add depreciation to the matrix for these years
+            depreciation_matrix[i, start_idx:end_idx] = annual_depr
+            
+        # Sum depreciation across all vintages for each calendar year
+        depreciation_df["total_depreciation"] = np.sum(depreciation_matrix, axis=0)
         
         return depreciation_df
     
-    def _calculate_rab(self, rollout_df: pd.DataFrame, depreciation_df: pd.DataFrame, years: List[int]) -> pd.DataFrame:
-        """Calculate Regulated Asset Base (RAB) evolution."""
+    def _calculate_rab(self, rollout_df: pd.DataFrame, depreciation_df: pd.DataFrame, years: List[int], params: Dict[str, Any] = None) -> pd.DataFrame:
+        """
+        Calculate Regulated Asset Base (RAB) evolution over time.
+        
+        The RAB is calculated by tracking the opening balance, adding new investments,
+        subtracting depreciation and obsolescence writeoffs, and calculating the
+        closing balance for each year. The average RAB is used for return calculations.
+        """
+        # Use self.params if no parameters are provided
+        if params is None:
+            params = self.params
+            
+        # Initialize RAB DataFrame 
         rab_df = pd.DataFrame(index=years)
-        rab_df["opening_rab"] = 0
+        
+        # Set initial columns (vectorised)
+        rab_df["opening_rab"] = 0.0
         rab_df["additions"] = rollout_df["capex"]
         rab_df["depreciation"] = depreciation_df["total_depreciation"]
-        rab_df["closing_rab"] = 0
+        rab_df["obsolescence_writeoff"] = 0.0
+        rab_df["closing_rab"] = 0.0
         
+        # Get obsolescence rate
+        obsolescence_rate = params.get("tech_obsolescence_rate", DEFAULT_TECH_OBSOLESCENCE_RATE)
+        
+        # Calculate RAB evolution (still requires loop due to sequential nature)
         for i, year in enumerate(years):
-            if i == 0:  # First year
-                opening_rab = 0
-            else:
-                opening_rab = rab_df.loc[years[i-1], "closing_rab"]
+            # Set opening RAB from previous closing RAB
+            if i > 0:
+                rab_df.loc[year, "opening_rab"] = rab_df.loc[years[i-1], "closing_rab"]
             
-            rab_df.loc[year, "opening_rab"] = opening_rab
+            # Calculate obsolescence writeoff (vectorised calculation)
+            if obsolescence_rate > 0 and i > 0:
+                opening_rab = rab_df.loc[year, "opening_rab"]
+                rab_df.loc[year, "obsolescence_writeoff"] = opening_rab * obsolescence_rate * DEFAULT_OBSOLESCENCE_FACTOR
             
-            # Calculate technological obsolescence writeoffs
-            if self.params.get("tech_obsolescence_rate", 0) > 0 and i > 0:
-                obsolescence_writeoff = opening_rab * self.params["tech_obsolescence_rate"] * 0.1
-            else:
-                obsolescence_writeoff = 0
-            
-            rab_df.loc[year, "obsolescence_writeoff"] = obsolescence_writeoff
-            
-            # Calculate closing RAB
-            closing_rab = (
-                opening_rab + 
+            # Calculate closing RAB (vectorised)
+            rab_df.loc[year, "closing_rab"] = (
+                rab_df.loc[year, "opening_rab"] + 
                 rab_df.loc[year, "additions"] - 
                 rab_df.loc[year, "depreciation"] -
-                obsolescence_writeoff
+                rab_df.loc[year, "obsolescence_writeoff"]
             )
-            
-            rab_df.loc[year, "closing_rab"] = closing_rab
         
-        # Calculate average RAB
+        # Calculate average RAB (vectorised)
         rab_df["average_rab"] = (rab_df["opening_rab"] + rab_df["closing_rab"]) / 2
         
         return rab_df
     
-    def _calculate_revenue(self, rollout_df: pd.DataFrame, rab_df: pd.DataFrame, years: List[int]) -> pd.DataFrame:
-        """Calculate revenue requirements with efficiency adjustments."""
+    def _calculate_revenue(self, rollout_df: pd.DataFrame, rab_df: pd.DataFrame, years: List[int], params: Dict[str, Any] = None) -> pd.DataFrame:
+        """
+        Calculate revenue requirements and customer bill impacts.
+        
+        Revenue requirements have three components:
+        1. Operating expenses - based on cumulative chargers and efficiency factor
+        2. Depreciation - from RAB calculations
+        3. Return on capital - WACC applied to average RAB
+        
+        Bill impacts are calculated by dividing net revenue by the customer base.
+        """
+        # Use self.params if no parameters are provided
+        if params is None:
+            params = self.params
+            
+        # Initialize revenue DataFrame
         revenue_df = pd.DataFrame(index=years)
         
-        # Calculate OpEx with efficiency adjustments
-        base_opex = rollout_df["cumulative_chargers"] * self.params["opex_per_charger"]
+        # Calculate efficiency factors (vectorised)
+        base_efficiency = params.get("efficiency", DEFAULT_EFFICIENCY)
+        degradation_rate = params.get("efficiency_degradation", DEFAULT_EFFICIENCY_DEGRADATION)
+        years_array = np.array(years) - 1  # Convert to 0-based years
+        revenue_df["efficiency_factor"] = base_efficiency * (1 + degradation_rate * years_array)
         
-        # Apply efficiency factor and degradation
-        efficiency = self.params.get("efficiency", 1.0)
-        degradation = self.params.get("efficiency_degradation", 0.0)
+        # Calculate revenue components (all vectorised)
+        # 1. Operating expenses
+        revenue_df["opex"] = rollout_df["cumulative_chargers"] * params["opex_per_charger"] * revenue_df["efficiency_factor"]
         
-        efficiency_factors = []
-        for year in years:
-            # Adjust year for calculation (subtract 1 to maintain same degradation pattern)
-            adjusted_year = year - 1
-            factor = efficiency * (1 + degradation * adjusted_year)
-            efficiency_factors.append(factor)
-        
-        revenue_df["efficiency_factor"] = efficiency_factors
-        revenue_df["opex"] = base_opex * revenue_df["efficiency_factor"]
-        
-        # Get depreciation from RAB
+        # 2. Depreciation
         revenue_df["depreciation"] = rab_df["depreciation"]
         
-        # Calculate return on capital using year-specific WACC
-        revenue_df["return_on_capital"] = 0
-        for year in years:
-            wacc = self.calculate_wacc(year)
-            revenue_df.loc[year, "wacc"] = wacc
-            revenue_df.loc[year, "return_on_capital"] = rab_df.loc[year, "average_rab"] * wacc
+        # 3. Return on capital
+        wacc = params["wacc"]
+        revenue_df["wacc"] = wacc
+        revenue_df["return_on_capital"] = rab_df["average_rab"] * wacc
         
-        # Calculate total revenue requirement
+        # Calculate total revenue (vectorised)
         revenue_df["total_revenue"] = (
             revenue_df["opex"] + 
             revenue_df["depreciation"] + 
             revenue_df["return_on_capital"]
         )
         
-        # Calculate third-party revenue
-        revenue_df["third_party_revenue"] = (
-            rollout_df["cumulative_chargers"] * self.params["third_party_revenue"]
-        )
+        # Calculate third-party revenue (vectorised)
+        revenue_df["third_party_revenue"] = rollout_df["cumulative_chargers"] * params["third_party_revenue"]
         
-        # Calculate net revenue requirement from customers
+        # Calculate bill impacts (vectorised)
         revenue_df["net_revenue"] = revenue_df["total_revenue"] - revenue_df["third_party_revenue"]
-        
-        # Calculate per-customer bill impact
-        revenue_df["bill_impact"] = revenue_df["net_revenue"] / self.params["customer_base"]
-        
-        # Calculate cumulative bill impact
+        revenue_df["bill_impact"] = revenue_df["net_revenue"] / params["customer_base"]
         revenue_df["cumulative_bill_impact"] = revenue_df["bill_impact"].cumsum()
         
         return revenue_df
     
-    def _calculate_summary(self, rollout_df: pd.DataFrame, rab_df: pd.DataFrame, revenue_df: pd.DataFrame) -> Dict[str, Any]:
-        """Calculate summary statistics for the model results."""
+    def _calculate_summary(self, rollout_df: pd.DataFrame, rab_df: pd.DataFrame, revenue_df: pd.DataFrame, params: Dict[str, Any] = None) -> Dict[str, float]:
+        """
+        Calculate key performance metrics for the model.
+        
+        This function computes various summary metrics including:
+        - Net Present Value (NPV) calculations for revenue and bill impacts
+        - Peak values and their corresponding years
+        - Averages and totals for key metrics
+        """
+        # Use self.params if no parameters are provided
+        if params is None:
+            params = self.params
+            
         years = rollout_df.index.tolist()
         
-        # Calculate NPV of revenue
-        npv_discount_rate = self.params["wacc"]
-        discount_factors = 1 / (1 + npv_discount_rate) ** np.array(years)
+        # Calculate NPV metrics (vectorised)
+        wacc = params["wacc"]
+        discount_factors = 1 / (1 + wacc) ** np.array(years)
+        npv_revenue = (revenue_df["total_revenue"] * discount_factors).sum()
+        npv_bill_impact = (revenue_df["bill_impact"] * discount_factors).sum()
         
-        npv_revenue = sum(revenue_df["total_revenue"] * discount_factors)
-        npv_bill_impact = sum(revenue_df["bill_impact"] * discount_factors)
-        
-        # Find peak values
+        # Identify peak values and years (vectorised operations)
         peak_rab = rab_df["closing_rab"].max()
         peak_rab_year = rab_df["closing_rab"].idxmax()
-        
         peak_bill_impact = revenue_df["bill_impact"].max()
         peak_bill_year = revenue_df["bill_impact"].idxmax()
         
-        # Calculate averages
-        avg_bill_impact = revenue_df["bill_impact"].mean()
-        total_bill_impact = revenue_df["bill_impact"].sum()
-        total_revenue = revenue_df["total_revenue"].sum()
-        total_opex = revenue_df["opex"].sum()
-        
-        # Final metrics
-        final_chargers = rollout_df["cumulative_chargers"].iloc[-1]
-        final_efficiency = revenue_df["efficiency_factor"].iloc[-1]
-        
-        # Create summary dictionary
-        summary = {
-            "total_chargers": float(final_chargers),
+        # Return key metrics
+        return {
+            "total_chargers": float(rollout_df["cumulative_chargers"].iloc[-1]),
             "peak_rab": float(peak_rab),
             "peak_rab_year": int(peak_rab_year),
             "npv_revenue": float(npv_revenue),
             "npv_bill_impact": float(npv_bill_impact),
             "peak_bill_impact": float(peak_bill_impact),
             "peak_bill_year": int(peak_bill_year),
-            "avg_bill_impact": float(avg_bill_impact),
-            "total_bill_impact": float(total_bill_impact),
-            "total_revenue": float(total_revenue),
-            "total_opex": float(total_opex),
-            "final_efficiency_factor": float(final_efficiency),
+            "avg_bill_impact": float(revenue_df["bill_impact"].mean()),
+            "total_bill_impact": float(revenue_df["bill_impact"].sum()),
+            "total_revenue": float(revenue_df["total_revenue"].sum()),
+            "total_opex": float(revenue_df["opex"].sum()),
+            "final_efficiency_factor": float(revenue_df["efficiency_factor"].iloc[-1]),
         }
-        
-        return summary
     
-    def _calculate_market_effects(self, rollout_df: pd.DataFrame, years: List[int]) -> pd.DataFrame:
-        """Calculate market competition effects."""
+    def _calculate_market_effects(self, rollout_df: pd.DataFrame, years: List[int], params: Dict[str, Any] = None) -> pd.DataFrame:
+        """
+        Calculate private market effects of the regulated deployment.
+        
+        This function models how regulated asset deployment affects private market investment:
+        1. Baseline private market is projected based on initial market and growth rate
+        2. Market displacement effect is calculated based on time and displacement rate
+        3. The actual private market is the baseline minus displacement
+        4. Total charger deployment with and without RAB is calculated for comparison
+        """
+        # Use self.params if no parameters are provided
+        if params is None:
+            params = self.params
+            
+        # Initialize market DataFrame
         market_df = pd.DataFrame(index=years)
         
-        # RAB model chargers
+        # Perform all calculations with vectorised operations
+        # 1. RAB deployment
         market_df["rab_chargers"] = rollout_df["cumulative_chargers"]
         
-        # Calculate baseline private market development
-        initial_private = 1000
-        private_growth = 0.2
+        # 2. Baseline private market (vectorised)
+        years_zero_based = np.array(years) - 1
+        market_df["baseline_private"] = DEFAULT_INITIAL_PRIVATE_CHARGERS * (1 + DEFAULT_PRIVATE_GROWTH_RATE) ** years_zero_based
         
-        # Adjust year values for calculations (subtract 1 to maintain same relative growth)
-        year_values_zero_based = np.array([y - 1 for y in years])
+        # 3. Calculate market displacement (vectorised)
+        displacement_rate = params.get("market_displacement", DEFAULT_MARKET_DISPLACEMENT)
+        saturation_factors = 1 - np.exp(-years_zero_based / DEFAULT_SATURATION_TIME_CONSTANT)
         
-        baseline_private = initial_private * np.power(1 + private_growth, year_values_zero_based)
-        market_df["baseline_private"] = baseline_private
-        
-        # Calculate displacement due to RAB
-        displacement_rate = self.params.get("market_displacement", 0)
-        
-        # Displacement increases over time but saturates
-        saturation_factors = 1 - np.exp(-year_values_zero_based / 5)
-        displacement_factors = displacement_rate * saturation_factors
-        
-        market_df["displaced_private"] = market_df["baseline_private"] * displacement_factors
+        market_df["displacement_factor"] = displacement_rate * saturation_factors
+        market_df["displaced_private"] = market_df["baseline_private"] * market_df["displacement_factor"]
         market_df["actual_private"] = market_df["baseline_private"] - market_df["displaced_private"]
         
-        # Calculate total market with and without RAB
+        # 4. Calculate total markets (vectorised)
         market_df["total_with_rab"] = market_df["rab_chargers"] + market_df["actual_private"]
         market_df["total_without_rab"] = market_df["baseline_private"]
         
-        # Calculate competitive vs. monopoly costs
-        base_capex = self.params["capex_per_charger"]
-        innovation_rate = self.params.get("innovation_rate", 0.02)
-        monopoly_rate = self.params.get("monopoly_innovation_rate", 0.01)
-        
-        market_df["competitive_capex"] = base_capex * np.power(1 - innovation_rate, year_values_zero_based)
-        market_df["monopoly_capex"] = base_capex * np.power(1 - monopoly_rate, year_values_zero_based)
-        
-        # Calculate innovation gap
-        market_df["innovation_gap"] = market_df["monopoly_capex"] - market_df["competitive_capex"]
-        market_df["innovation_gap_pct"] = market_df["innovation_gap"] / market_df["competitive_capex"] * 100
-        
-        return market_df
-
-    def run_monte_carlo(self, n_simulations: int = 500, parameter_ranges: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """
-        Run Monte Carlo simulation with parameter variations.
-        
-        Args:
-            n_simulations: Number of simulations to run
-            parameter_ranges: Dictionary of parameter distributions
-            
-        Returns:
-            Dictionary with simulation results
-        """
-        if parameter_ranges is None:
-            parameter_ranges = self._get_default_parameter_ranges()
-        
-        # Set random seed for reproducibility
-        rng = np.random.default_rng(42)
-        
-        results = []
-        
-        for i in range(n_simulations):
-            # Generate random parameters
-            sim_params = self.params.copy()
-            
-            for param_name, param_range in parameter_ranges.items():
-                if param_name not in sim_params:
-                    continue
-                
-                dist_type = param_range.get("distribution", "uniform")
-                
-                if dist_type == "uniform":
-                    min_val = param_range.get("min", sim_params[param_name] * 0.8)
-                    max_val = param_range.get("max", sim_params[param_name] * 1.2)
-                    sim_params[param_name] = rng.uniform(min_val, max_val)
-                    
-                elif dist_type == "triangular":
-                    min_val = param_range.get("min", sim_params[param_name] * 0.8)
-                    max_val = param_range.get("max", sim_params[param_name] * 1.2)
-                    mode = param_range.get("mode", sim_params[param_name])
-                    sim_params[param_name] = rng.triangular(min_val, mode, max_val)
-                
-                elif dist_type == "normal":
-                    mean = param_range.get("mean", sim_params[param_name])
-                    std = param_range.get("std", sim_params[param_name] * 0.1)
-                    sim_params[param_name] = rng.normal(mean, std)
-            
-            # Create model instance with simulation parameters
-            model = KerbsideModel(sim_params)
-            model_results = model.run()
-            
-            # Extract key results
-            summary = model_results["summary"]
-            
-            # Store simulation results
-            sim_result = {
-                "simulation": i,
-                "avg_bill_impact": summary["avg_bill_impact"],
-                "peak_bill_impact": summary["peak_bill_impact"],
-                "npv_bill_impact": summary["npv_bill_impact"],
-                "total_bill_impact": summary["total_bill_impact"],
-                "final_efficiency_factor": summary["final_efficiency_factor"],
-            }
-            
-            # Store key parameter values
-            for param_name in parameter_ranges.keys():
-                if param_name in sim_params:
-                    sim_result[f"param_{param_name}"] = sim_params[param_name]
-            
-            results.append(sim_result)
-        
-        # Convert to DataFrame
-        results_df = pd.DataFrame(results)
-        
-        # Calculate summary statistics
-        summary_stats = self._calculate_monte_carlo_summary(results_df)
-        
-        return {
-            "results_df": results_df,
-            "summary_stats": summary_stats
-        }
-    
-    def _get_default_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
-        """Get default parameter ranges for Monte Carlo simulation."""
-        return {
-            "capex_per_charger": {
-                "distribution": "triangular",
-                "min": 4500,
-                "mode": 6000,
-                "max": 8000
-            },
-            "opex_per_charger": {
-                "distribution": "triangular",
-                "min": 350,
-                "mode": 500,
-                "max": 700
-            },
-            "asset_life": {
-                "distribution": "triangular", 
-                "min": 6,
-                "mode": 8,
-                "max": 10
-            },
-            "wacc": {
-                "distribution": "normal",
-                "mean": 0.058,
-                "std": 0.005
-            },
-            "efficiency": {
-                "distribution": "triangular",
-                "min": 0.9,
-                "mode": 1.0,
-                "max": 1.3
-            },
-            "tech_obsolescence_rate": {
-                "distribution": "triangular",
-                "min": 0.0,
-                "mode": 0.05,
-                "max": 0.1
-            },
-            "market_displacement": {
-                "distribution": "triangular",
-                "min": 0.0,
-                "mode": 0.3,
-                "max": 0.7
-            }
-        }
-    
-    def _calculate_monte_carlo_summary(self, results_df: pd.DataFrame) -> Dict[str, Any]:
-        """Calculate summary statistics for Monte Carlo results."""
-        metrics = [col for col in results_df.columns if not col.startswith("param_") and col != "simulation"]
-        
-        summary = {}
-        
-        for metric in metrics:
-            values = results_df[metric].values
-            
-            summary[f"{metric}_mean"] = float(np.mean(values))
-            summary[f"{metric}_median"] = float(np.median(values))
-            summary[f"{metric}_std"] = float(np.std(values))
-            summary[f"{metric}_min"] = float(np.min(values))
-            summary[f"{metric}_max"] = float(np.max(values))
-            summary[f"{metric}_p10"] = float(np.percentile(values, 10))
-            summary[f"{metric}_p90"] = float(np.percentile(values, 90))
-        
-        # Calculate parameter sensitivities (correlations)
-        param_cols = [col for col in results_df.columns if col.startswith("param_")]
-        
-        correlations = {}
-        for metric in metrics:
-            metric_corrs = {}
-            
-            for param in param_cols:
-                param_name = param.replace("param_", "")
-                corr = np.corrcoef(results_df[param], results_df[metric])[0, 1]
-                metric_corrs[param_name] = float(corr)
-            
-            # Sort by absolute correlation
-            correlations[metric] = dict(sorted(
-                metric_corrs.items(), 
-                key=lambda x: abs(x[1]), 
-                reverse=True
-            ))
-        
-        summary["correlations"] = correlations
-        
-        return summary 
+        return market_df 

@@ -5,6 +5,14 @@ Monte Carlo tab component for the Kerbside Model app.
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from src.model.monte_carlo import run_monte_carlo
+from src.utils.config import (
+    MAX_MONTE_CARLO_SIMULATIONS,
+    DEFAULT_CHART_HEIGHT,
+    DEFAULT_COLOR_SCHEME,
+    CURRENCY_FORMAT
+)
+from src.utils.conversion_utils import format_currency
 
 
 def render_monte_carlo_tab(model_results, model):
@@ -29,7 +37,7 @@ def render_monte_carlo_tab(model_results, model):
         n_simulations = st.number_input(
             "Number of Simulations",
             min_value=100,
-            max_value=1000,
+            max_value=MAX_MONTE_CARLO_SIMULATIONS,
             value=200,
             step=100,
             help="More simulations provide better results but take longer"
@@ -40,7 +48,8 @@ def render_monte_carlo_tab(model_results, model):
     # Run Monte Carlo simulation if requested
     if run_mc_button:
         with st.spinner(f"Running {n_simulations} simulations..."):
-            mc_results = model.run_monte_carlo(n_simulations=n_simulations)
+            # Use the new monte_carlo module instead of the model method
+            mc_results = run_monte_carlo(model, n_simulations=n_simulations)
             st.session_state.mc_results = mc_results
     
     # Display Monte Carlo results if available
@@ -60,20 +69,26 @@ def render_monte_carlo_tab(model_results, model):
                 x="avg_bill_impact",
                 nbins=20,
                 title="Average Annual Bill Impact",
-                labels={"avg_bill_impact": "Average Annual Bill Impact ($)"}
+                labels={"avg_bill_impact": "Average Annual Bill Impact ($)"},
+                color_discrete_sequence=[px.colors.sequential.Blues[5]]
             )
             
+            # Format the mean value correctly
+            mean_value = summary_stats["avg_bill_impact_mean"]
+            mean_label = format_currency(mean_value)
+            
             fig.add_vline(
-                x=summary_stats["avg_bill_impact_mean"], 
+                x=mean_value, 
                 line_dash="dash", 
                 line_color="red",
-                annotation_text=f"Mean: ${summary_stats['avg_bill_impact_mean']:.2f}"
+                annotation_text=f"Mean: {mean_label}"
             )
             
             fig.update_layout(
                 xaxis=dict(title="Average Annual Bill Impact ($)"),
                 yaxis=dict(title="Frequency"),
-                showlegend=False
+                showlegend=False,
+                height=DEFAULT_CHART_HEIGHT
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -84,20 +99,26 @@ def render_monte_carlo_tab(model_results, model):
                 x="peak_bill_impact",
                 nbins=20,
                 title="Peak Annual Bill Impact",
-                labels={"peak_bill_impact": "Peak Annual Bill Impact ($)"}
+                labels={"peak_bill_impact": "Peak Annual Bill Impact ($)"},
+                color_discrete_sequence=[px.colors.sequential.Blues[5]]
             )
             
+            # Format the mean value correctly
+            mean_value = summary_stats["peak_bill_impact_mean"]
+            mean_label = format_currency(mean_value)
+            
             fig.add_vline(
-                x=summary_stats["peak_bill_impact_mean"], 
+                x=mean_value, 
                 line_dash="dash", 
                 line_color="red",
-                annotation_text=f"Mean: ${summary_stats['peak_bill_impact_mean']:.2f}"
+                annotation_text=f"Mean: {mean_label}"
             )
             
             fig.update_layout(
                 xaxis=dict(title="Peak Annual Bill Impact ($)"),
                 yaxis=dict(title="Frequency"),
-                showlegend=False
+                showlegend=False,
+                height=DEFAULT_CHART_HEIGHT
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -108,10 +129,10 @@ def render_monte_carlo_tab(model_results, model):
         # Create a table of statistics for key metrics
         metrics = ["avg_bill_impact", "peak_bill_impact", "npv_bill_impact", "total_bill_impact"]
         metric_labels = {
-            "avg_bill_impact": "Average Annual Bill Impact ($)",
-            "peak_bill_impact": "Peak Annual Bill Impact ($)",
-            "npv_bill_impact": "NPV of Bill Impacts ($)",
-            "total_bill_impact": "Total Bill Impact ($)"
+            "avg_bill_impact": "Average Annual Bill Impact",
+            "peak_bill_impact": "Peak Annual Bill Impact",
+            "npv_bill_impact": "NPV of Bill Impacts",
+            "total_bill_impact": "Total Bill Impact"
         }
         
         stats_data = []
@@ -119,11 +140,11 @@ def render_monte_carlo_tab(model_results, model):
         for metric in metrics:
             stats_data.append({
                 "Metric": metric_labels.get(metric, metric),
-                "Mean": f"${summary_stats[f'{metric}_mean']:.2f}",
-                "Median": f"${summary_stats[f'{metric}_median']:.2f}",
-                "Std Dev": f"${summary_stats[f'{metric}_std']:.2f}",
-                "10th %ile": f"${summary_stats[f'{metric}_p10']:.2f}",
-                "90th %ile": f"${summary_stats[f'{metric}_p90']:.2f}"
+                "Mean": format_currency(summary_stats[f"{metric}_mean"]),
+                "Median": format_currency(summary_stats[f"{metric}_median"]),
+                "Std Dev": format_currency(summary_stats[f"{metric}_std"]),
+                "10th %ile": format_currency(summary_stats[f"{metric}_p10"]),
+                "90th %ile": format_currency(summary_stats[f"{metric}_p90"])
             })
         
         stats_df = pd.DataFrame(stats_data)
@@ -160,7 +181,8 @@ def render_monte_carlo_tab(model_results, model):
                 fig.update_layout(
                     xaxis=dict(title="Correlation Coefficient"),
                     yaxis=dict(title=""),
-                    coloraxis_showscale=False
+                    coloraxis_showscale=False,
+                    height=DEFAULT_CHART_HEIGHT
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
